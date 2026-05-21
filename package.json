@@ -1,0 +1,33 @@
+{
+  "name": "destiny-os",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Destiny — Your AI-powered operating system",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck",
+    "clean": "turbo clean",
+    "format": "prettier --write \"**/*.{ts,tsx,json,css}\"",
+    "ago": "node apps/cli/dist/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/sql.js": "^1.4.11",
+    "prettier": "^3.5.0",
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "npm@10.0.0",
+  "dependencies": {
+    "sql.js": "^1.14.1"
+  }
+}
