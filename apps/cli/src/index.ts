@@ -7,6 +7,7 @@ import { tasksCommand } from "./commands/tasks.js";
 import { configCommand } from "./commands/config.js";
 import { initCommand } from "./commands/init.js";
 import { statusCommand } from "./commands/status.js";
+import { webCommand } from "./commands/web.js";
 
 const program = new Command();
 
@@ -57,7 +58,25 @@ program
   .option("--json", "Output as JSON")
   .action(statusCommand);
 
-program.parse(process.argv);
+program
+  .command("web")
+  .description("Launch web dashboard")
+  .option("-p, --port <number>", "Port to listen on", "3456")
+  .action(async (options: { port: string }) => {
+    await webCommand(parseInt(options.port, 10));
+  });
 
-const config = loadConfig();
-logger.info("Destiny OS initialized");
+const args = process.argv.slice(2);
+
+async function main() {
+  if (args.length === 0) {
+    const { launchTui } = await import("./tui/index.js");
+    await launchTui();
+  } else {
+    program.parse(process.argv);
+    const config = loadConfig();
+    logger.info("Destiny OS initialized");
+  }
+}
+
+main();

@@ -1,6 +1,5 @@
 import { logger, type Task, type Run, type Step, type ProviderConfig, type CompletionResponse } from "@destiny-os/shared";
 import {
-  createRun,
   completeRun,
   addStep,
   completeStep,
@@ -31,8 +30,6 @@ export abstract class AgentLoop {
     const { task, run, provider, config } = this.ctx;
 
     updateTaskStatus(task.id, "running");
-    const startedRun = createRun(task.id);
-    if (!startedRun) throw new Error("Failed to create run");
 
     try {
       await this.plan();

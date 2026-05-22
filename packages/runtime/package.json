@@ -9,7 +9,7 @@
     ".": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean",
+    "build": "tsup src/index.ts --format esm --dts --clean && node scripts/copy-wasm.mjs",
     "dev": "tsup src/index.ts --format esm --dts --watch",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
@@ -21,6 +21,7 @@
     "nanoid": "^5.0.0"
   },
   "devDependencies": {
+    "@types/sql.js": "^1.4.11",
     "tsup": "^8.3.0",
     "typescript": "^5.7.0"
   }

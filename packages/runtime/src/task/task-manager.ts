@@ -1,12 +1,24 @@
 import { nanoid } from "nanoid";
 import type { Task, CreateTask, Run, Step, ToolInvocation, TaskStatus } from "@destiny-os/shared";
-import { logger } from "@destiny-os/shared";
+import { logger, EventType } from "@destiny-os/shared";
+import { persistTask, persistRun, persistStep, loadAllTasks } from "../events/task-persistence.js";
+import { EventBus } from "../events/bus.js";
 
 interface TaskStore {
   tasks: Map<string, Task>;
 }
 
 const store: TaskStore = { tasks: new Map() };
+
+export function hydrateFromDb(): void {
+  const tasks = loadAllTasks();
+  for (const task of tasks) {
+    store.tasks.set(task.id, task);
+  }
+  if (tasks.length > 0) {
+    logger.info(`Hydrated ${tasks.length} tasks from database`);
+  }
+}
 
 export function createTask(input: CreateTask): Task {
   const now = new Date().toISOString();
@@ -26,6 +38,14 @@ export function createTask(input: CreateTask): Task {
     projectId: input.projectId,
   };
   store.tasks.set(task.id, task);
+  persistTask(task);
+  EventBus.getInstance().emitEvent({
+    id: nanoid(),
+    type: EventType.TASK_CREATED,
+    taskId: task.id,
+    timestamp: now,
+    payload: { task: task as unknown as Record<string, unknown> },
+  });
   logger.info(`Task created: ${task.id} — "${task.title}"`);
   return task;
 }
@@ -46,6 +66,26 @@ export function updateTaskStatus(taskId: string, status: TaskStatus): Task | und
   if (status === "completed" || status === "failed" || status === "cancelled") {
     task.completedAt = task.updatedAt;
   }
+  persistTask(task);
+
+  const now2 = new Date().toISOString();
+  const statusEventType =
+    status === "running"
+      ? EventType.TASK_STARTED
+      : status === "completed"
+        ? EventType.TASK_COMPLETED
+        : status === "failed"
+          ? EventType.TASK_FAILED
+          : EventType.TASK_CANCELLED;
+
+  EventBus.getInstance().emitEvent({
+    id: nanoid(),
+    type: statusEventType,
+    taskId: task.id,
+    timestamp: now2,
+    payload: { taskId: task.id, status },
+  });
+
   return task;
 }
 
@@ -63,6 +103,16 @@ export function createRun(taskId: string): Run | undefined {
   task.currentRunId = run.id;
   task.status = "running";
   task.updatedAt = new Date().toISOString();
+  persistRun(run);
+  persistTask(task);
+  EventBus.getInstance().emitEvent({
+    id: nanoid(),
+    type: EventType.RUN_STARTED,
+    taskId,
+    runId: run.id,
+    timestamp: run.startedAt,
+    payload: { taskId, runId: run.id },
+  });
   logger.info(`Run created: ${run.id} for task ${taskId}`);
   return run;
 }
@@ -83,6 +133,17 @@ export function completeRun(taskId: string, runId: string, error?: string): Run 
   }
   task.updatedAt = new Date().toISOString();
   task.completedAt = new Date().toISOString();
+  persistRun(run);
+  persistTask(task);
+  const runEventType = error ? EventType.RUN_FAILED : EventType.RUN_COMPLETED;
+  EventBus.getInstance().emitEvent({
+    id: nanoid(),
+    type: runEventType,
+    taskId,
+    runId: run.id,
+    timestamp: run.completedAt ?? new Date().toISOString(),
+    payload: { taskId, runId: run.id, error },
+  });
   return run;
 }
 
@@ -107,6 +168,16 @@ export function addStep(
     startedAt: new Date().toISOString(),
   };
   run.steps.push(step);
+  persistStep(step);
+  EventBus.getInstance().emitEvent({
+    id: nanoid(),
+    type: EventType.STEP_STARTED,
+    taskId,
+    runId,
+    stepId: step.id,
+    timestamp: step.startedAt,
+    payload: { taskId, runId, stepId: step.id, type: step.type },
+  });
   return step;
 }
 
@@ -128,6 +199,17 @@ export function completeStep(
   step.completedAt = new Date().toISOString();
   step.duration = new Date(step.completedAt).getTime() - new Date(step.startedAt).getTime();
   step.error = error;
+  persistStep(step);
+  const stepEventType = error ? EventType.STEP_FAILED : EventType.STEP_COMPLETED;
+  EventBus.getInstance().emitEvent({
+    id: nanoid(),
+    type: stepEventType,
+    taskId,
+    runId,
+    stepId: step.id,
+    timestamp: step.completedAt ?? new Date().toISOString(),
+    payload: { taskId, runId, stepId: step.id, error },
+  });
   return step;
 }
 
@@ -152,6 +234,15 @@ export function addToolInvocation(
     startedAt: new Date().toISOString(),
   };
   step.toolInvocations.push(invocation);
+  EventBus.getInstance().emitEvent({
+    id: nanoid(),
+    type: EventType.TOOL_INVOKED,
+    taskId,
+    runId,
+    stepId,
+    timestamp: invocation.startedAt,
+    payload: { invocationId: invocation.id, tool, input },
+  });
   return invocation;
 }
 
@@ -176,5 +267,15 @@ export function completeToolInvocation(
   invocation.duration =
     new Date(invocation.completedAt).getTime() - new Date(invocation.startedAt).getTime();
   invocation.error = error;
+  const toolEventType = error ? EventType.TOOL_FAILED : EventType.TOOL_COMPLETED;
+  EventBus.getInstance().emitEvent({
+    id: nanoid(),
+    type: toolEventType,
+    taskId,
+    runId,
+    stepId,
+    timestamp: invocation.completedAt,
+    payload: { invocationId: invocation.id, error },
+  });
   return invocation;
 }

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { z } from "zod";
 
 export const VaultConfigSchema = z.object({
@@ -6,7 +7,8 @@ export const VaultConfigSchema = z.object({
 });
 
 export const RuntimeConfigSchema = z.object({
-  provider: z.enum(["claude-code", "openai", "local"]).default("claude-code"),
+  provider: z.enum(["claude-code", "openai", "gemini", "local"]).default("claude-code"),
+  apiKey: z.string().optional(),
   maxTokens: z.number().default(8192),
   temperature: z.number().default(0.7),
 });
@@ -56,15 +58,13 @@ export function expandHome(path: string): string {
 }
 
 export function loadConfig(): DestinyConfig {
-  const configPath = process.env.DESTINY_CONFIG_PATH;
-  if (configPath) {
-    try {
-      const raw = readFileSync(configPath, "utf-8");
-      const parsed = JSON.parse(raw);
-      return DestinyConfigSchema.parse({ ...DEFAULT_CONFIG, ...parsed });
-    } catch {
-      return DEFAULT_CONFIG;
-    }
+  const configPath =
+    process.env.DESTINY_CONFIG_PATH ?? resolve(expandHome("~/DestinyOS"), "config.json");
+  try {
+    const raw = readFileSync(configPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    return DestinyConfigSchema.parse({ ...DEFAULT_CONFIG, ...parsed });
+  } catch {
+    return DEFAULT_CONFIG;
   }
-  return DEFAULT_CONFIG;
 }

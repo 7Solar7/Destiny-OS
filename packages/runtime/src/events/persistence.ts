@@ -1,11 +1,71 @@
-import initSqlJs, { type Database as SqlJsDatabase } from "sql.js";
+import initSqlJs from "sql.js";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expandHome, logger } from "@destiny-os/shared";
 import type { Event } from "@destiny-os/shared";
 
-let db: SqlJsDatabase | null = null;
-let dbPath: string | null = null;
+interface DbRow {
+  [key: string]: unknown;
+}
+
+class Stmt {
+  private stmt: any = null;
+  constructor(stmt: any) {
+    this.stmt = stmt;
+  }
+  run(...params: unknown[]): void {
+    if (!this.stmt) throw new Error("Statement already freed");
+    this.stmt.bind(params);
+    this.stmt.step();
+    this.stmt.free();
+    this.stmt = null;
+  }
+  all(...params: unknown[]): DbRow[] {
+    if (!this.stmt) throw new Error("Statement already freed");
+    this.stmt.bind(params);
+    const rows: DbRow[] = [];
+    while (this.stmt.step()) {
+      rows.push(this.stmt.getAsObject() as DbRow);
+    }
+    this.stmt.free();
+    this.stmt = null;
+    return rows;
+  }
+  get(...params: unknown[]): DbRow | undefined {
+    if (!this.stmt) throw new Error("Statement already freed");
+    this.stmt.bind(params);
+    let row: DbRow | undefined;
+    if (this.stmt.step()) {
+      row = this.stmt.getAsObject() as DbRow;
+    }
+    this.stmt.free();
+    this.stmt = null;
+    return row;
+  }
+}
+
+function createDb(sqljsDb: any) {
+  return {
+    prepare(sql: string): Stmt {
+      return new Stmt(sqljsDb.prepare(sql));
+    },
+    exec(sql: string): void {
+      sqljsDb.exec(sql);
+    },
+    close(): void {
+      sqljsDb.close();
+    },
+    export(): Buffer {
+      return Buffer.from(sqljsDb.export());
+    },
+  };
+}
+
+export type Database = ReturnType<typeof createDb>;
+
+let db: Database | null = null;
+export let dbPath: string | null = null;
 
 export async function initDatabase(databasePath?: string): Promise<void> {
   const resolvedPath = databasePath ?? resolve(expandHome("~/DestinyOS"), "destiny.db");
@@ -16,20 +76,24 @@ export async function initDatabase(databasePath?: string): Promise<void> {
     mkdirSync(dir, { recursive: true });
   }
 
-  const SQL = await initSqlJs();
+  const currentDir = dirname(fileURLToPath(import.meta.url));
+  const SQL = await initSqlJs({
+    locateFile: (file: string) => resolve(currentDir, file),
+  });
+  let sqljsDb: any;
   if (existsSync(resolvedPath)) {
     const buffer = readFileSync(resolvedPath);
-    db = new SQL.Database(buffer);
+    sqljsDb = new SQL.Database(buffer);
   } else {
-    db = new SQL.Database();
+    sqljsDb = new SQL.Database();
   }
-
+  db = createDb(sqljsDb);
   runMigrations(db);
   logger.info("Database initialized at", resolvedPath);
 }
 
-function runMigrations(sqlite: SqlJsDatabase): void {
-  sqlite.run(`
+function runMigrations(sqlite: Database): void {
+  sqlite.exec(`
     CREATE TABLE IF NOT EXISTS events (
       id TEXT PRIMARY KEY,
       type TEXT NOT NULL,
@@ -108,7 +172,7 @@ function runMigrations(sqlite: SqlJsDatabase): void {
     );
   `);
 
-  sqlite.run(`
+  sqlite.exec(`
     CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
     CREATE INDEX IF NOT EXISTS idx_events_task_id ON events(task_id);
     CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
@@ -121,32 +185,31 @@ function runMigrations(sqlite: SqlJsDatabase): void {
   saveDatabase();
 }
 
-function saveDatabase(): void {
+export function saveDatabase(): void {
   if (db && dbPath) {
     const data = db.export();
-    writeFileSync(dbPath, Buffer.from(data));
+    writeFileSync(dbPath, data);
   }
 }
 
-function getDb(): SqlJsDatabase {
+export function getDb(): Database {
   if (!db) throw new Error("Database not initialized. Call initDatabase() first.");
   return db;
 }
 
 export function persistEvent(event: Event): void {
   const d = getDb();
-  d.run(
-    "INSERT INTO events (id, type, task_id, run_id, step_id, timestamp, payload, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    [
-      event.id,
-      event.type,
-      event.taskId ?? null,
-      event.runId ?? null,
-      event.stepId ?? null,
-      event.timestamp,
-      JSON.stringify(event.payload),
-      event.metadata ? JSON.stringify(event.metadata) : null,
-    ]
+  d.prepare(
+    "INSERT INTO events (id, type, task_id, run_id, step_id, timestamp, payload, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(
+    event.id,
+    event.type,
+    event.taskId ?? null,
+    event.runId ?? null,
+    event.stepId ?? null,
+    event.timestamp,
+    JSON.stringify(event.payload),
+    event.metadata ? JSON.stringify(event.metadata) : null,
   );
   saveDatabase();
   logger.debug("Event persisted:", event.type);
@@ -154,59 +217,37 @@ export function persistEvent(event: Event): void {
 
 export function getEventsByType(type: string, limit = 100): Event[] {
   const d = getDb();
-  const stmt = d.prepare("SELECT * FROM events WHERE type = ? ORDER BY timestamp DESC LIMIT ?");
-  stmt.bind([type, limit]);
-  const rows: Record<string, unknown>[] = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject() as Record<string, unknown>);
-  }
-  stmt.free();
+  const rows = d.prepare("SELECT * FROM events WHERE type = ? ORDER BY timestamp DESC LIMIT ?").all(type, limit);
   return rows.map(deserializeEvent);
 }
 
 export function getEventsByTaskId(taskId: string): Event[] {
   const d = getDb();
-  const stmt = d.prepare("SELECT * FROM events WHERE task_id = ? ORDER BY timestamp DESC");
-  stmt.bind([taskId]);
-  const rows: Record<string, unknown>[] = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject() as Record<string, unknown>);
-  }
-  stmt.free();
+  const rows = d.prepare("SELECT * FROM events WHERE task_id = ? ORDER BY timestamp DESC").all(taskId);
   return rows.map(deserializeEvent);
 }
 
 export function getEventsInRange(from: string, to: string, limit = 500): Event[] {
   const d = getDb();
-  const stmt = d.prepare(
+  const rows = d.prepare(
     "SELECT * FROM events WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT ?"
-  );
-  stmt.bind([from, to, limit]);
-  const rows: Record<string, unknown>[] = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject() as Record<string, unknown>);
-  }
-  stmt.free();
+  ).all(from, to, limit);
   return rows.map(deserializeEvent);
 }
 
 export function replayEvents(handler: (event: Event) => void, filter?: { type?: string; taskId?: string }): void {
   const d = getDb();
-  let stmt: ReturnType<SqlJsDatabase["prepare"]>;
+  let rows: Record<string, unknown>[];
   if (filter?.type) {
-    stmt = d.prepare("SELECT * FROM events WHERE type = ? ORDER BY timestamp");
-    stmt.bind([filter.type]);
+    rows = d.prepare("SELECT * FROM events WHERE type = ? ORDER BY timestamp").all(filter.type);
   } else if (filter?.taskId) {
-    stmt = d.prepare("SELECT * FROM events WHERE task_id = ? ORDER BY timestamp");
-    stmt.bind([filter.taskId]);
+    rows = d.prepare("SELECT * FROM events WHERE task_id = ? ORDER BY timestamp").all(filter.taskId);
   } else {
-    stmt = d.prepare("SELECT * FROM events ORDER BY timestamp");
+    rows = d.prepare("SELECT * FROM events ORDER BY timestamp").all();
   }
-  while (stmt.step()) {
-    const row = stmt.getAsObject() as Record<string, unknown>;
+  for (const row of rows) {
     handler(deserializeEvent(row));
   }
-  stmt.free();
 }
 
 function deserializeEvent(row: Record<string, unknown>): Event {
